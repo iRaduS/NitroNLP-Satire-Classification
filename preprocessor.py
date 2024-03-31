@@ -1,8 +1,10 @@
+# import spacy
 from pandas import DataFrame
 from abc import ABC, abstractmethod
 from typing import List, TypeVar, Generic, Tuple
 from transformers import AutoTokenizer, BatchEncoding
 from tqdm import tqdm
+# from spacy.lang.ro import Romanian
 
 
 PT = TypeVar('PT')
@@ -31,6 +33,11 @@ class AutoPreprocessor(TextPreprocessor[BatchEncoding]):
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.repo)
         self.max_length: int = max_length
+    #     self.nlp = spacy.load('ro_core_news_lg')
+    #
+    # def lemmatize(self, text: str) -> str:
+    #     doc = self.nlp(text)
+    #     return " ".join([token.lemma_.strip() for token in doc])
 
     def __call__(self, dataset: DataFrame) -> Tuple[DataFrame, BatchEncoding]:
         dataset = dataset.drop(dataset[dataset['text'].str.contains('\t')].index)
@@ -64,7 +71,8 @@ class AutoPreprocessor(TextPreprocessor[BatchEncoding]):
                 .replace('­', '') \
                 .replace('–', '') \
                 .replace('—', '')
-            sentences.append(text)
+            # lemmatized_text = self.lemmatize(text)
+            sentences.append(lemmatized_text)
 
         return dataset, self.tokenizer.__call__(
             sentences,
