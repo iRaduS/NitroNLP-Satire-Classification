@@ -10,7 +10,7 @@ from typing import Dict, List
 from sklearn.metrics import balanced_accuracy_score
 
 
-def train(model: nn.Module, optimizer: Optimizer, loss_fn: nn.Module, train_loader: DataLoader, args: Args, device: torch.device):
+def train(model: nn.Module, optimizer: Optimizer, loss_fn: nn.Module, train_loader: DataLoader, args: Args, device: torch.device, use_pretrained = False):
     for epoch in range(args.num_epochs):
         model.train()
 
@@ -21,7 +21,10 @@ def train(model: nn.Module, optimizer: Optimizer, loss_fn: nn.Module, train_load
             batch: Dict[str, torch.Tensor] = {k: v.to(device) for k, v in batch.items()}
 
             y_true: torch.Tensor | np.ndarray = batch['label']
-            y_pred: torch.Tensor | np.ndarray = model.forward(batch)
+            if use_pretrained:
+                y_pred: torch.Tensor | np.ndarray = model(**{k: v for k, v in batch.items() if k != 'label'}).logits
+            else:
+                y_pred: torch.Tensor | np.ndarray = model.forward(batch)
 
             optimizer.zero_grad()
             loss: torch.Tensor = loss_fn(y_pred, y_true)
@@ -37,7 +40,6 @@ def train(model: nn.Module, optimizer: Optimizer, loss_fn: nn.Module, train_load
 
             output = Output(predictions, epoch_loss, epoch_accuracy, with_labels=True)
             print('Train Epoch {} - Loss: {}, Balanced accuracy: {}'.format(epoch, output.loss_mean, output.accy_mean))
-
     return output
 
 
@@ -49,7 +51,7 @@ def evaluate(model: nn.Module, loss_fn: nn.Module, data_loader: DataLoader,
         epoch_accy: List[float] = []
         predictions: List[int] = []
 
-        for _, batch in enumerate(data_loader):
+        for batch in tqdm(data_loader):
             batch: Dict[str, torch.Tensor] = {k: v.to(device) for k, v in batch.items()}
 
             y_pred: torch.Tensor | np.ndarray = model.forward(batch)
@@ -66,4 +68,6 @@ def evaluate(model: nn.Module, loss_fn: nn.Module, data_loader: DataLoader,
                 epoch_loss.append(loss.detach().cpu().numpy())
 
     output = Output(predictions, epoch_loss, epoch_accy, with_labels=with_labels)
+    if with_labels:
+        print('Validation Epoch - Loss: {}, Balanced accuracy: {}'.format(output.loss_mean, output.accy_mean))
     return output

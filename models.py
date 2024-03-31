@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 from torch import Tensor
-from transformers import AutoModel, BertModel, MT5Model, MT5EncoderModel
-from typing import Dict, List, Literal
+from transformers import AutoModel, BertModel
+from typing import Dict, List
 from abc import ABC, abstractmethod
 import numpy as np
 
@@ -10,15 +10,14 @@ import numpy as np
 class Args(object):
     def __init__(self) -> None:
         self.num_epochs = 3
-        self.num_workers = 1
-        self.batch_size = 8
+        self.batch_size = 64
         self.weight_decay = 5e-6
         self.learning_rate = 2e-5
 
 
 class Output(object):
     def __init__(self, predictions: List[int], loss_seq: List[float], accy_seq: List[float],
-                with_labels: bool) -> None:
+                 with_labels: bool) -> None:
         self.predictions_as_indx: np.ndarray = np.array(predictions)
         self.with_labels: bool = with_labels
         if self.with_labels:
@@ -55,45 +54,6 @@ class PretrainedFlatClassModel(ABC, nn.Module):
             raise ValueError('invalid layers param - bad unfreeze')
 
 
-class MT5FlatClassModel(PretrainedFlatClassModel):
-    def __init__(self, unfreeze: Literal['all'] | Literal['none'] | List[str] = 'none', *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.fc_head = torch.nn.Linear(49152, 2)
-        self.mt5: MT5Model = MT5EncoderModel.from_pretrained(
-            "dumitrescustefan/mt5-base-romanian")
-        self.unfreeze([
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[10],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.block[11],
-            self.mt5.encoder.final_layer_norm
-        ])
-
-    def create_layers(self) -> nn.Sequential:
-        pass
-
-    def forward(self, x: Dict[str, Tensor]) -> Tensor:
-        y = self.mt5(
-            input_ids=x['input_ids'], attention_mask=x['attention_mask']).last_hidden_state
-        y = y.view(y.shape[0], -1)
-        y = self.fc_head(y)
-        return y
-
-
 class BERTFlatClassModel(PretrainedFlatClassModel):
     def __init__(self,
                  dropout: float = 0.1,
@@ -117,6 +77,10 @@ class BERTFlatClassModel(PretrainedFlatClassModel):
             nn.Linear(in_features=512, out_features=self.n_classes)
         )
 
+        for layer in self.layers:
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_normal_(layer.weight)
+
     def forward(self, x: Dict[str, Tensor]) -> Tensor:
         input_ids: Tensor = x['input_ids']
         attention_mask: Tensor = x['attention_mask']
@@ -127,19 +91,17 @@ class BERTFlatClassModel(PretrainedFlatClassModel):
         return output
 
 
-class RoBERTFlatClassModel(PretrainedFlatClassModel):
+class BERTLSTMClassModel(PretrainedFlatClassModel):
     def __init__(self,
                  dropout: float = 0.1,
                  *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-
-        # Save internal params
-        self.layers = None
+        self.lstm = None
+        self.classifier = None
         self.dropout: float = dropout
-
-        # Init the base model
         self.n_classes = 2
-        self.repo = 'readerbench/RoBERT-base'
+        self.num_layers = 2
+        self.repo = 'dumitrescustefan/bert-base-romanian-cased-v1'
         self.bert_model: BertModel = AutoModel.from_pretrained(self.repo)
         self.unfreeze([
             self.bert_model.pooler.dense,
@@ -148,28 +110,33 @@ class RoBERTFlatClassModel(PretrainedFlatClassModel):
         self.create_layers()
 
     def create_layers(self) -> None:
-        self.layers = nn.Sequential(
-            nn.Dropout(p=0.1),
-            nn.Linear(in_features=768, out_features=self.n_classes)
+        self.lstm = nn.LSTM(input_size=768,
+                            hidden_size=256,
+                            num_layers=self.num_layers,
+                            batch_first=True,
+                            bidirectional=True,
+                            dropout=self.dropout if self.num_layers > 1 else 0)
+
+        self.classifier = nn.Linear(
+            in_features=256 * 2,
+            out_features=self.n_classes
         )
 
     def forward(self, x: Dict[str, Tensor]) -> Tensor:
-        # Extract the relevant data
         input_ids: Tensor = x['input_ids']
         attention_mask: Tensor = x['attention_mask']
+        outputs = self.bert_model(input_ids, attention_mask=attention_mask)
+        bert_output = outputs.last_hidden_state
 
-        # Call the pretrained model
-        _, output = self.bert_model(
-            input_ids, attention_mask, return_dict=False)
+        lstm_output, (hidden_state, cell_state) = self.lstm(bert_output)
+        lstm_output = torch.cat((hidden_state[-2, :, :], hidden_state[-1, :, :]), dim=1)
 
-        # Add layers over it
-        output = self.layers(output)
-
+        output = self.classifier(lstm_output)
         return output
 
 
 class Ensemble(nn.Module):
-    def __init__(self, models: List[nn.Module], *args, **kwargs) -> None:
+    def __init__(self, models: List[Dict[str, str | nn.Module]], *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         # Init models
@@ -179,7 +146,10 @@ class Ensemble(nn.Module):
         y_hats = []
 
         for model in self.models:
-            y_hat = model.forward(x).detach().cpu()
+            if model['name'] == 'bert':
+                y_hat = model['model'](**{k: v for k, v in x.items() if k != 'label'}).logits.detach().cpu()
+            else:
+                y_hat = model['model'].forward(x).detach().cpu()
             y_hats.append(y_hat)
 
         stacked = torch.stack(y_hats, dim=1)
