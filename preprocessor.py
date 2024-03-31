@@ -72,7 +72,8 @@ class AutoPreprocessor(TextPreprocessor[BatchEncoding]):
                 .replace('–', '') \
                 .replace('—', '')
             # lemmatized_text = self.lemmatize(text)
-            sentences.append(lemmatized_text)
+            # sentences.append(lemmatized_text)
+            sentences.append(text)
 
         return dataset, self.tokenizer.__call__(
             sentences,
