@@ -38,7 +38,7 @@ model_setup = [
         'name': 'bert-mlp',
         'model_factory': lambda: BERTFlatClassModel().to(DEVICE),
         'optim_factory': lambda params: optim.AdamW(params, lr=Args().learning_rate, weight_decay=Args().weight_decay),
-        'loss_fn': nn.CrossEntropyLoss(),
+        'loss_fn': nn.CrossEntropyLoss(weight=train_dataset.weights.to(DEVICE)),
     },
     {
         'name': 'bert-lstm',
@@ -85,7 +85,7 @@ model = Ensemble(pretrained_models)
 test_loader: DataLoader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 test_output: Output = evaluate(
     model=model,
-    loss_fn=nn.CrossEntropyLoss(),
+    loss_fn=nn.CrossEntropyLoss(weight=train_dataset.weights.to(DEVICE)),
     data_loader=test_loader,
     with_labels=False,
     device=DEVICE
